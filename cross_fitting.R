@@ -2,10 +2,41 @@ library(dplyr)
 library(ranger)
 library(rmeta)
 
-
-sim.sample <- function(data, n.clusters, n.per.cluster, counts){
-  avail <- as.integer(names(counts)) %in% data$cluster
-  clusters_chosen <- sample(names(counts)[avail], n.clusters, replace = F, prob = counts[avail] /nrow(data))
+#' Simulate a Sample from Clustered Data
+#'
+#' This function selects a specific number of clusters from a dataset with probability 
+#' proportional to their size (as defined by `cluster_counts`), and then draws a 
+#' fixed number of random samples from within each selected cluster.
+#'
+#' @param data A data frame containing the population data. It must contain a column 
+#'   named `cluster` which corresponds to the names in `cluster_counts`.
+#' @param n.clusters Integer. The number of distinct clusters to select.
+#' @param n.per.cluster Integer. The number of observations to sample from each 
+#'   selected cluster.
+#' @param cluster_counts A named integer or numeric vector. The values represent the 
+#'   size (or weight) of the clusters, and the names must correspond to the cluster 
+#'   IDs found in `data$cluster`.
+#'
+#' @return A data frame containing the combined rows of the sampled clusters.
+#'
+#' @importFrom dplyr filter sample_n bind_rows %>%
+#'
+#' @examples
+#' \dontrun{
+#' # Assuming 'my_data' has a 'cluster' column and 'my_counts' is a named vector
+#' sampled_df <- sim.sample(data = my_data, 
+#'                          n.clusters = 5, 
+#'                          n.per.cluster = 10, 
+#'                          cluster_counts = my_counts)
+#' }
+#'
+#' @export
+sim.sample <- function(data, n.clusters, n.per.cluster, cluster_counts){
+  avail <- as.integer(names(cluster_counts)) %in% data$cluster
+  clusters_chosen <- sample(names(cluster_counts)[avail], 
+                            n.clusters, 
+                            replace = F, 
+                            prob = cluster_counts[avail] /nrow(data))
   pts <- data.frame()
   for (c in clusters_chosen){
     new <- data %>% 
@@ -16,7 +47,23 @@ sim.sample <- function(data, n.clusters, n.per.cluster, counts){
   pts
 }
 
-
+#' Limit and Recycle Cross-Validation Folds
+#'
+#' Checks if the number of unique folds in the data exceeds a maximum limit. 
+#' If it does, it reassigns the fold identifiers by cycling through the range 
+#' `1:max_folds` using modulo arithmetic.
+#'
+#' @param train.data A data frame containing the training data. Must include a 
+#'   column named `fold`.
+#' @param max_folds Integer. The maximum allowable number of folds.
+#'
+#' @return A data frame. If the original number of folds is less than or equal to 
+#'   `max_folds`, the original data is returned. Otherwise, the `fold` column is 
+#'   updated.
+#'
+#' @importFrom dplyr mutate %>%
+#'
+#' @export
 set_max_folds <- function(train.data, max_folds) {
   n <- length(unique(train.data$fold))
   if (n <= max_folds){
@@ -26,13 +73,42 @@ set_max_folds <- function(train.data, max_folds) {
              mutate(
                fold =  ceiling(fold %% max_folds + 1)
              ))  
-    
   }
-  
-  
 }
 
-cluster_wo_replacement_variance <- function(data, target, cluster_areas){
+#' Estimate Variance for Clustered Sampling Without Replacement
+#'
+#' Calculates a variance estimate that combines between-cluster and within-cluster 
+#' variance, weighted by cluster areas and adjusted for the fraction of the total 
+#' area sampled.
+#'
+#' @param data A data frame containing the sampled observations. Must contain 
+#'   columns `cluster` and the variable specified by `target`.
+#' @param target Character string. The name of the column in `data` for which 
+#'   the variance is being calculated.
+#' @param cluster_areas A data frame containing the total areas (or weights) for 
+#'   the clusters. Must contain columns `cluster` and `area`.
+#'
+#' @return A single numeric value representing the estimated variance.
+#'
+#' @details 
+#' The variance is calculated as a weighted combination of:
+#' 1. **Between-cluster variance**: Variance of the cluster means.
+#' 2. **Within-cluster variance**: Variance of observations within clusters, 
+#'    weighted by cluster area.
+#' 
+#' These are combined using the fraction of the total area sampled (`frac_sampled`) 
+#' as a weighting factor: 
+#' \code{between_var * (1 - frac_sampled) + within_var * frac_sampled}
+#'
+#' @importFrom dplyr group_by summarize ungroup pull left_join filter %>%
+#' @importFrom stats var weighted.mean
+#'
+#' @export
+cluster_wo_replacement_variance <- function(data, 
+                                            target, 
+                                            cluster_areas){
+  # Calculate variance between cluster means
   between_var <- data %>% 
     group_by(cluster) %>% 
     summarize(m = mean(get(target))) %>% 
@@ -40,6 +116,7 @@ cluster_wo_replacement_variance <- function(data, target, cluster_areas){
     summarize(x = var(m) / n()) %>%
     pull(x)
   
+  # Calculate variance within clusters, weighted by area
   within_var <- data  %>% 
     group_by(cluster) %>% 
     summarize(v = var(get(target)), n = n()) %>%
@@ -62,6 +139,7 @@ cluster_wo_replacement_variance <- function(data, target, cluster_areas){
 coverage_vals <- c(seq(.2, .8, .2), .9, .95, .99)
 coverage_cols <- paste('covered_', as.character(coverage_vals), sep = '')
 
+
 add.coverage.cols <- function(data){
   data$p_val <- pt(data$t,  data$df)
   for (c in coverage_vals){
@@ -72,16 +150,62 @@ add.coverage.cols <- function(data){
 }
 
 
-estimate_gdif <- function(grd, formula, train_data, test_data, 
+
+
+#' Estimate the mean of a population using the difference estimator and a 
+#' random forest model, using a clustered without replacement design
+#'
+#' Calculates a variance estimate that combines between-cluster and within-cluster 
+#' variance, weighted by cluster areas and adjusted for the fraction of the total 
+#' area sampled.
+#'
+#' @param full_grd A data frame containing the covariates for the full mapped area. 
+#' Must contain columns `cluster` and the variable specified by `target`.
+#'   @param formula A formula object for the random forest model
+#'   
+#'     @param formula A formula object for the random forest model
+#'     
+#' @param train_data A data frame containing the sampled observations used for 
+#' fitting the machine learning model. 
+#' Must contain  columns `cluster` and the variable specified by `target`.
+#' 
+#' @param test_data A data frame containing the sampled observations used for 
+#' estimating the model's error
+#' Must contain  columns `cluster` and the variable specified by `target`.
+
+#'   
+#' @param target Character string. The name of the column in `data` for which 
+#'   the variance is being calculated.
+#' @param cluster_areas A data frame containing the total areas (or weights) for 
+#'   the clusters. Must contain columns `cluster` and `area`.
+#'
+#' @return A dataframe of the estiamted target value, its variance and the estimated
+#' model bias
+#'
+#' @details 
+#' The variance is calculated as a weighted combination of:
+#' 1. **Between-cluster variance**: Variance of the cluster means.
+#' 2. **Within-cluster variance**: Variance of observations within clusters, 
+#'    weighted by cluster area.
+#' 
+#' These are combined using the fraction of the total area sampled (`frac_sampled`) 
+#' as a weighting factor: 
+#' \code{between_var * (1 - frac_sampled) + within_var * frac_sampled}
+#'
+#' @importFrom dplyr group_by summarize ungroup pull left_join filter %>%
+#' @importFrom stats var weighted.mean
+#'
+#' @export
+estimate_gdif <- function(full_grd, formula, train_data, test_data, 
                           cluster_areas,
-                          type=  'cluster', target = 'y' 
+                          target = 'y' 
                           ){
   rf.mod <- ranger::ranger(formula, train_data)
   test_data$pred <- predict(rf.mod, test_data)$predictions
   test_data$err <- test_data$pred - test_data[, target]
   
   me <- mean(test_data$err)
-  mean_ml_pred <- mean(predict(rf.mod, grd)$predictions)
+  mean_ml_pred <- mean(predict(rf.mod, full_grd)$predictions)
   full_pred <-  mean_ml_pred- me
   
   between_var <- test_data %>% 
@@ -116,7 +240,23 @@ estimate_gdif <- function(grd, formula, train_data, test_data,
                     me = me))
 }
 
-x.fit.gdif <- function(grd, data, formula, n.folds, cluster_areas){
+
+
+#'Estimate the generalized difference estimator by using cross-fitting
+#' @param full_grd A data frame containing the covariates for the full mapped area. 
+#' Must contain columns `cluster` and the variable specified by `target`.
+#' @param data A data frame containing the sample data covariates for the full mapped area. 
+#' Must contain columns `cluster` and the variable specified by `target`.
+#' 
+#'   @param formula A formula object for the random forest model
+#'   #' @param target Character string. The name of the column in `data` for which 
+#'   the variance is being calculated.
+#' @param cluster_areas A data frame containing the total areas (or weights) for 
+#'   the clusters. Must contain columns `cluster` and `area`.
+#'
+#'   
+x.fit.gdif <- function(full_grd, data, formula, n.folds, cluster_areas,
+                       target=  'y'){
   data <-data %>% 
     mutate(fold = dense_rank(cluster)) %>% set_max_folds(n.folds)
   
@@ -125,7 +265,7 @@ x.fit.gdif <- function(grd, data, formula, n.folds, cluster_areas){
   for (f in unique(data$fold)){
     train_data <- data %>% filter(fold != f)
     test_data <- data %>% filter(fold == f)
-    .r <- estimate_gdif(grd, formula, train_data, test_data, 
+    .r <- estimate_gdif(full_grd, formula, train_data, test_data, 
                         cluster_areas)
     gdif_ests <- bind_rows(gdif_ests, .r)
     gdif_ests$df <- length(unique(test_data$cluster)) -1
@@ -172,7 +312,8 @@ x.fit.gdif <- function(grd, data, formula, n.folds, cluster_areas){
   return(full_est %>% mutate(n.folds = n.folds))
 }
 
-
+#' Run and experiment on the gdif estimator using a random forest model,
+#' cross-fitting, and a 2-stage cluster without-replacement design.
 run.experiment <- function(dataset, formula, n.clusters.sampled,
                            n.samples.per.cluster, n.folds, 
                            n.reps = 100){
@@ -196,8 +337,8 @@ for (i in 1:n.reps){
   db_var_est <- cluster_wo_replacement_variance(samps, 'y', cluster_areas)
   db_pred <- mean(samps$y)
     
-  sim.fun <- function(n.folds){
-    x.fit.gdif(grd_resampled, samps, formula.amaz, 2, cluster_areas)}
+  sim.fun <- function(n.fold){
+    x.fit.gdif(dataset, samps, formula, n.fold, cluster_areas)}
   
   new_data <- do.call('rbind',
                       lapply(n.folds, sim.fun)
@@ -232,7 +373,8 @@ test <- run.experiment(grd_resampled,
                        formula.amaz, 
                        n.clusters.sampled = 8,
                        n.samples.per.cluster = 12, 
-                       n.folds = c(2,4,8), n.reps = 2)
+                       n.folds = c(2,4,8), 
+                       n.reps = 2)
 
 
 res_amaz <- run.experiment(grd_resampled, 
