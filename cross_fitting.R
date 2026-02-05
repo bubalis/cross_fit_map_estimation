@@ -3,7 +3,7 @@ library(ranger)
 library(rmeta)
 
 
-sim.sample <- function(data, n.clusters, n.per.cluster){
+sim.sample <- function(data, n.clusters, n.per.cluster, counts){
   avail <- as.integer(names(counts)) %in% data$cluster
   clusters_chosen <- sample(names(counts)[avail], n.clusters, replace = F, prob = counts[avail] /nrow(data))
   pts <- data.frame()
@@ -56,6 +56,19 @@ cluster_wo_replacement_variance <- function(data, target, cluster_areas){
   
   
   return(between_var*(1-frac_sampled) + within_var*frac_sampled )
+}
+
+
+coverage_vals <- c(seq(.2, .8, .2), .9, .95, .99)
+coverage_cols <- paste('covered_', as.character(coverage_vals), sep = '')
+
+add.coverage.cols <- function(data){
+  data$p_val <- pt(data$t,  data$df)
+  for (c in coverage_vals){
+    name <- paste('covered_', as.character(c), sep = '')
+    data[,name] <- (data$p_val > (.5 - c/2)) &  (data$p_val < (.5 + c/2))
+  }
+  return(data)
 }
 
 
@@ -159,74 +172,100 @@ x.fit.gdif <- function(grd, data, formula, n.folds, cluster_areas){
   return(full_est %>% mutate(n.folds = n.folds))
 }
 
-amazonia_vars <- c('SWIR2', 'Terra_PP', 'Prec_dm', 'Elevation', 'Clay', 'x1', 'x2')
-#grdAmazonia <- grdAmazonia %>% mutate(y = AGB)
-formula.amaz <- as.formula(paste('y ~ ', paste(amazonia_vars, collapse = ' + '), sep = '' ) )
 
-#res <- read.csv('cross_validation_strategies.csv')
-#res <- data.frame()
-experiment <- 'amazonia.agb'
+run.experiment <- function(dataset, formula, n.clusters.sampled,
+                           n.samples.per.cluster, n.folds, 
+                           n.reps = 100){
 
-load('data/grd_resampled.rda')
-
-counts <-  table(grd_resampled$cluster)
-
+counts <-  table(dataset$cluster)
 cluster_areas <- data.frame(counts) %>% 
   rename(cluster = Var1, area = Freq) %>% 
   mutate(cluster = as.integer(cluster))
 
 
 
+
+
+
 gdif.sim.res <- data.frame()
-for (i in 1:100){
+for (i in 1:n.reps){
   print(i)
-  samps <- sim.sample(grd_resampled, 20, 20)
+  samps <- sim.sample(dataset, n.clusters.sampled, 
+                      n.sampled.per.cluster, counts)
   
   db_var_est <- cluster_wo_replacement_variance(samps, 'y', cluster_areas)
   db_pred <- mean(samps$y)
     
+  sim.fun <- function(n.folds){
+    x.fit.gdif(grd_resampled, samps, formula.amaz, 2, cluster_areas)}
   
-  new_data <-   bind_rows(
-  x.fit.gdif(grd_resampled, samps, formula.amaz, 2, cluster_areas),
-  x.fit.gdif(grd_resampled, samps, formula.amaz, 4, cluster_areas),
- x.fit.gdif(grd_resampled, samps, formula.amaz, 5, cluster_areas),
- x.fit.gdif(grd_resampled, samps, formula.amaz, 10, cluster_areas),
- #x.fit.gdif(grd_resampled, samps, formula.amaz, 8, cluster_areas),
-  x.fit.gdif(grd_resampled, samps, formula.amaz, 20, cluster_areas),
- #x.fit.gdif(grd_resampled, samps, formula.amaz, 20, cluster_areas),
- data.frame(pred = db_pred, se = sqrt(db_var_est), method = 'db', n.folds = NA)
+  new_data <- do.call('rbind',
+                      lapply(n.folds, sim.fun)
+                      )
+  
+  new_data <-   bind_rows(new_data,
+ data.frame(pred = db_pred, se = sqrt(db_var_est), method = 'db', n.folds = n.clusters.sampled)
  ) %>% mutate(run_i = i)
   
   gdif.sim.res <- gdif.sim.res %>% 
     bind_rows(new_data)
 }
 
-coverage_vals <- c(seq(.2, .8, .2), .9, .95, .99)
-coverage_cols <- paste('covered_', as.character(coverage_vals), sep = '')
+gdif.sim.res %>%
+  mutate(true.mean = mean(dataset$y),
+         err = pred - true.mean, 
+         t = err / se,
+         df = n.folds - 1, 
+         n.clusters = n.clusters.sampled) %>% 
+  add.coverage.cols()
 
-add.coverage.cols <- function(data){
-  data$p_val <- pt(data$t,  data$df)
-  for (c in coverage_vals){
-    name <- paste('covered_', as.character(c), sep = '')
-    data[,name] <- (data$p_val > (.5 - c/2)) &  (data$p_val < (.5 + c/2))
-  }
-  return(data)
 }
 
-gdif.sim.res <- gdif.sim.res %>% 
- mutate(true.mean = mean(grd_resampled$y), 
-        err = pred - true.mean, t = err / se,
-        df = ifelse(is.na(n.folds), 19, n.folds -1)) %>S% 
-  add.coverage.cols()
-  
+amazonia_vars <- c('SWIR2', 'Terra_PP', 'Prec_dm', 'Elevation', 'Clay', 'x1', 'x2')
+#grdAmazonia <- grdAmazonia %>% mutate(y = AGB)
+formula.amaz <- as.formula(paste('y ~ ', paste(amazonia_vars, collapse = ' + '), sep = '' ) )
+experiment <- 'amazonia.agb'
+load('data/grd_resampled.rda')
 
 
-gdif.sim.res %>% 
+test <- run.experiment(grd_resampled, 
+                       formula.amaz, 
+                       n.clusters.sampled = 8,
+                       n.samples.per.cluster = 12, 
+                       n.folds = c(2,4,8), n.reps = 2)
+
+
+res_amaz <- run.experiment(grd_resampled, 
+                           formula.amaz, 
+                           n.clusters.sampled = 20,
+                           n.samples.per.cluster = 12, 
+                           n.folds = c(2,5,10,20))
+
+
+
+
+
+res_amaz %>% 
   group_by(method, n.folds) %>% 
   summarize_at(vars(coverage_cols), mean) %>%
-  print(n = 50)
+  print(n = 25)
 
-gdif.sim.res %>%  group_by(method, n.folds) %>%
+res_amaz %>%  group_by(method, n.folds) %>%
   summarize(bias = mean(err), v_err = var(err), var_est = mean(se**2),
             v_t = var(t)) %>% 
   print(n = 50)
+
+
+
+
+
+load('data/grd_ocs_eu.rda')
+grd.ocs.eu$y <- grd.ocs.eu$ocs
+ocs.vars <- colnames(grd.ocs.eu)[4:22]
+formula.ocs.eu <- as.formula(paste('y ~', paste(ocs.vars, collapse = ' + '), sep = ' '))
+
+res_ocs_eu <- run.experiment(grd.ocs.eu, 
+                             formula.ocs.eu, 
+                             20,
+                             12, 
+                             n.folds = c(2,5,10,20))
