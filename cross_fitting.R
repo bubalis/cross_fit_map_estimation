@@ -358,7 +358,7 @@ x.fit.gdif <- function(full_grd, data, formula, n.folds, cluster_areas,
 #' cross-fitting, and a 2-stage cluster without-replacement design.
 run.experiment <- function(dataset, formula, n.clusters.sampled,
                            n.sampled.per.cluster, n.folds, 
-                           n.reps = 100){
+                           n.reps = 150){
 
 counts <-  table(dataset$cluster)
 cluster_areas <- data.frame(counts) %>% 
@@ -423,7 +423,7 @@ gdif.sim.res %>%
 }
 
 
-#This experiment takes about 1/2 an hour to run on my machine, simpler example
+#This experiment takes about 1 an hour to run on my machine, simpler example
 
 amazonia_vars <- c('SWIR2', 'Terra_PP', 'Prec_dm', 'Elevation', 'Clay', 'x1', 'x2')
 #grdAmazonia <- grdAmazonia %>% mutate(y = AGB)
@@ -432,19 +432,19 @@ experiment <- 'amazonia.agb'
 load('data/grd_resampled.rda')
 
 
-test <- run.experiment(grd_resampled, 
-                       formula.amaz, 
-                       n.clusters.sampled = 8,
-                       n.sampled.per.cluster = 12, 
-                       n.folds = c(2,4,8), 
-                       n.reps = 2)
+# test <- run.experiment(grd_resampled, 
+#                        formula.amaz, 
+#                        n.clusters.sampled = 8,
+#                        n.sampled.per.cluster = 12, 
+#                        n.folds = c(2,4,8), 
+#                        n.reps = 2)
 
 
 res_amaz <- run.experiment(grd_resampled, 
                            formula.amaz, 
                            n.clusters.sampled = 20,
-                           n.sampled.per.cluster = 12, 
-                           n.folds = c(2,5,10,20))
+                           n.sampled.per.cluster = 10, 
+                           n.folds = c(4, 5, 10, 20))
 
 
 
@@ -477,8 +477,8 @@ formula.ocs.eu <- as.formula(paste('y ~', paste(ocs.vars, collapse = ' + '), sep
 res_ocs_eu <- run.experiment(grd.ocs.eu, 
                              formula.ocs.eu, 
                              20,
-                             12, 
-                             n.folds = c(2,5,10,20))
+                             10, 
+                             n.folds = c(4,5,10,20))
 
 
 print('Coverage summary')
